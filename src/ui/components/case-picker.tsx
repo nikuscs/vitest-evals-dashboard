@@ -8,7 +8,8 @@ let cache: Promise<EvalCase[]> | undefined;
 
 const fetchCases = (refresh = false) => {
   if (refresh || !cache) {
-    cache = fetch(refresh ? '/api/cases?refresh' : '/api/cases').then(async (response) => {
+    const request = refresh ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' } : undefined;
+    cache = fetch('/api/cases', request).then(async (response) => {
       if (!response.ok) {
         throw new Error(((await response.json()) as { error?: string }).error ?? 'Could not read the evals');
       }

@@ -119,8 +119,9 @@ async function api(request: IncomingMessage, response: ServerResponse, path: str
     }
   }
 
+  // A refresh spawns `vitest list`, so it is a POST and gets the cross-site check.
   if (resource === 'cases') {
-    return json(response, 200, await cases.get(new URL(request.url ?? '/', 'http://localhost').searchParams.has('refresh')));
+    return json(response, 200, await cases.get(request.method === 'POST'));
   }
 
   if (resource !== 'runs') {
@@ -181,6 +182,27 @@ const trusted = (host = '') => {
   return isIP(name) > 0 || allowedHosts.some((allowed) => (allowed.startsWith('.') ? name.endsWith(allowed) : name === allowed));
 };
 
+// A cross-site page can still POST a text/plain body without a preflight, so writes need a JSON body from the dashboard's own origin.
+const sameOrigin = (request: IncomingMessage) => {
+  const { origin, host } = request.headers;
+
+  if (origin === undefined) {
+    return true;
+  }
+
+  const from = URL.parse(origin);
+  // Parsing the Host with the origin's scheme drops a default port (:80, :443) the same way the origin does.
+  return Boolean(from && host && from.host === URL.parse(`${from.protocol}//${host}`)?.host);
+};
+
+const crossSite = (request: IncomingMessage) => {
+  if (request.method === 'GET' || request.method === 'HEAD') {
+    return false;
+  }
+
+  return !sameOrigin(request) || !request.headers['content-type']?.toLowerCase().startsWith('application/json');
+};
+
 const server = createServer((request, response) => {
   if (!trusted(request.headers.host)) {
     return json(response, 403, { error: 'Host not allowed' });
@@ -192,7 +214,16 @@ const server = createServer((request, response) => {
     return json(response, 400, { error: 'Bad request' });
   }
 
+  // Vite's editor launcher opens any path and answers plain GETs, which any page can send. The dashboard uses /api/open instead.
+  if (`${path} ${request.url}`.toLowerCase().includes('/__open-in-editor')) {
+    return json(response, 404, { error: 'Not found' });
+  }
+
   if (path.startsWith('/api/')) {
+    if (crossSite(request)) {
+      return json(response, 403, { error: 'Cross-site request refused' });
+    }
+
     api(request, response, path).catch((error: unknown) => json(response, 500, { error: String(error) }));
     return;
   }
